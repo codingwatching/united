@@ -108,11 +108,13 @@ Set a callback that is called whenever a state of the passed state type changes.
 
 ___
 
-`sm:to(state, [ignore])`
+`sm:to(state, [lock, ignore, userData])`
 
 Change the current state to the passed state. If the state is not allowed, the state will not change.
 
-If the ignore parameter is set to true, the state will change regardless of the configuration or locking.
+If the `lock` parameter is set to `true`, the state will be locked.
+
+If the `ignore` parameter is set to `true`, the state will change regardless of the configuration or locking.
 
 You can also ignore specific checks by passing a table with the state types you want to ignore, using `united.ignore`.
 
@@ -131,6 +133,8 @@ self.sm:to(action.Run, {
 	[united.ignore.check] = true
 })
 ```
+
+You can pass custom `userData`, which will be passed to all callbacks.
 
 > Returns true if the state was changed, false otherwise.
 
@@ -202,6 +206,15 @@ Unlocks the state.
 
 2. Unlock the state type. If no state is given, the default state type is used.
 > Returns true
+
+___
+
+`sm:suggest([state])`
+
+Suggest a state to be set. If you call this method again without argument, it will set it to the suggested state, if in the meantime the state has not changed.
+
+A good usecase for this is suggesting an idle state at the start of the player update, and then calling the suggestion
+
 
 ## License
 

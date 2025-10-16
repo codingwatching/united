@@ -44,7 +44,7 @@ local function executeFunction(self, state, data, name, ...)
     local propName = name
 
     if functions[propName] == nil then
-        local name_state = self.names[state]
+        local name_state = self._names[state]
         name_state = name_state:sub(1, 1):lower() .. name_state:sub(2)
         local f = self._object[name_state .. name]
 
@@ -61,7 +61,7 @@ local function executeFunction(self, state, data, name, ...)
     end
 end
 
-local function canGoToState(self, state, ignoreTypes)
+local function canGoToState(self, state, ignoreTypes, userData)
     local stateType = findStateType(self, state)
 
     if self._currentStates[stateType] == state and not (ignoreTypes and ignoreTypes[ignore_type.current]) then
@@ -69,28 +69,24 @@ local function canGoToState(self, state, ignoreTypes)
         return false
     end
 
-    if self.locks[stateType] and not (ignoreTypes and ignoreTypes[ignore_type.lock]) then
+    if self._locks[stateType] and not (ignoreTypes and ignoreTypes[ignore_type.lock]) then
         return false
     end
 
-    local data = self.stateData[stateType][state]
+    local data = self._stateData[stateType][state]
 
-    if not (ignoreTypes and ignoreTypes[ignore_type.check]) then
-        local result = executeFunction(self, state, data, "Check")
-        if result == false then
-            return false
-        end
-    end
-
-    if data.all then
-        return true
-    end
-
-    if not (ignoreTypes and ignoreTypes[ignore_type.config]) then
+    if not data.all and not (ignoreTypes and ignoreTypes[ignore_type.config]) then
         for k, v in pairs(self._currentStates) do
             if data.list[v] ~= data.list[k] then
                 return false
             end
+        end
+    end
+
+    if not (ignoreTypes and ignoreTypes[ignore_type.check]) then
+        local result = executeFunction(self, state, data, "Check", userData)
+        if result == false then
+            return false
         end
     end
 
@@ -110,6 +106,8 @@ function united.new(object, ...)
     self._names = {}
     self._locks = {}
     self._callbacks = {}
+    self._userData = {}
+    self._suggestion = {}
 
     for _, statetype in ipairs({ ... }) do
         self._stateData[statetype] = {}
@@ -128,9 +126,18 @@ function united.new(object, ...)
     return setmetatable(self, united)
 end
 
+function united:init(...)
+    for i, v in ipairs({ ... }) do
+        local stateType = findStateType(self, v)
+        if stateType then
+            self._currentStates[stateType] = v
+        end
+    end
+end
+
 function united:update(dt)
     for k, v in pairs(self._currentStates) do
-        executeFunction(self, v, self._stateData[k][v], "Update", dt)
+        executeFunction(self, v, self._stateData[k][v], "Update", dt, self._userData[k])
     end
 end
 
@@ -187,7 +194,7 @@ function united:is(state)
     return false
 end
 
-function united:to(state, ignore)
+function united:to(state, lock, ignore, userData)
     if ignore and (ignore == true or (type(ignore) == "table" and ignore[ignore_type.All])) then
         ignore = {
             [ignore_type.config] = true,
@@ -199,14 +206,20 @@ function united:to(state, ignore)
         ignore = { [ignore] = true }
     end
 
+    userData = userData or {}
+
+
     local stateType = findStateType(self, state)
-    if not canGoToState(self, state, ignore) then
+
+    self._suggestion[stateType] = nil
+
+    if not canGoToState(self, state, ignore, userData) then
         return false
     end
 
     local current = self._currentStates[stateType]
     if current and current ~= state then
-        executeFunction(self, current, self._stateData[stateType][current], "Exit")
+        executeFunction(self, current, self._stateData[stateType][current], "Exit", self._userData[stateType])
     end
 
     local new_current = self._currentStates[stateType]
@@ -215,11 +228,13 @@ function united:to(state, ignore)
         return false
     end
 
+    self._userData[stateType] = userData
+
     if self._callbacks[stateType] then
         self._callbacks[stateType](self._object, current, state)
     end
 
-    executeFunction(self, state, self._stateData[stateType][state], "Enter")
+    executeFunction(self, state, self._stateData[stateType][state], "Enter", self._userData[stateType])
 
     new_current = self._currentStates[stateType]
     if new_current ~= current then
@@ -234,18 +249,22 @@ function united:to(state, ignore)
         self._locks[stateType] = nil
     end
 
+    if lock then
+        self._locks[stateType] = state
+    end
+
     return true
 end
 
-function united:push(state, ignore)
+function united:push(state, ...)
     local stateType = findStateType(self, state)
     local current = self._currentStates[stateType]
-    if self:to(state, ignore) then
+    if self:to(state, ...) then
         local stack = self._stateStack[stateType]
-        if not stack[#stack] == current then
+        if stack[#stack] ~= current then
             stack[#stack + 1] = current
         end
-        stack[#stack + 1] = state
+        return true
     end
 
     return false
@@ -292,6 +311,47 @@ function united:unlock(state)
 
     self._locks[state or self._defaultStateType] = nil
     return true
+end
+
+function united:getData(stateType)
+    stateType = stateType or self._defaultStateType
+    return self._userData[stateType]
+end
+
+function united:hook(stateType, name, ...)
+    local args = { ... }
+
+    if type(stateType) == "string" then
+        args = { name, ... }
+        name = stateType
+        stateType = nil
+    end
+
+    stateType = stateType or self._defaultStateType
+    local state = self:get(stateType)
+    table.insert(args, self._userData[stateType])
+    return executeFunction(self, state, self._stateData[stateType][state], name:gsub("^%l", string.upper), unpack(args))
+end
+
+function united:suggest(state)
+    local t = type(state)
+    if t == "string" then
+        local stateType = findStateType(self, state)
+        self._suggestion[stateType] = state
+        return
+    elseif t == "table" then
+        if self._suggestion[state] then
+            local suggestion = self._suggestion[state]
+            self._suggestion[state] = nil
+            self:to(suggestion)
+        end
+        return
+    end
+
+    for k, suggestion in pairs(self._suggestion) do
+        self._suggestion[k] = nil
+        self:to(suggestion)
+    end
 end
 
 return united
